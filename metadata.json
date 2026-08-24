@@ -1,0 +1,6 @@
+{
+  "name": "OmniCompare AI Arena - 多模型并发对话与评测扩展",
+  "description": "全屏并发发起ChatGPT、Gemini、通义千问、DeepSeek、Z.AI、Kimi、豆包等多模型多轮对话对比评测与一键打包Chrome浏览器插件",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
