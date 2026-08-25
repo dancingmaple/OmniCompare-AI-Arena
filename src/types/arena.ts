@@ -37,6 +37,10 @@ export interface ModelAutomationState {
   inputFound: boolean;
   lastScrapedContent?: string;
   lastScrapedThinking?: string;
+  retryCount?: number; // 0, 1, 2, 3
+  nextRetrySeconds?: number; // countdown seconds to next retry (e.g. 60, 59...)
+  isRetrying?: boolean;
+  conversationUrl?: string;
   logs: { time: string; text: string; type: 'info' | 'success' | 'warn' | 'error' }[];
 }
 

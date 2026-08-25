@@ -1,4 +1,5 @@
 import React from 'react';
+import { ExtensionIcon } from './ExtensionIcon';
 import {
   Sparkles,
   Grid,
@@ -64,8 +65,8 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* Brand & Active Status Badge */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold shadow-md shadow-indigo-500/20">
-            <Sparkles className="w-4 h-4" />
+          <div className="w-8 h-8 rounded-lg overflow-hidden shadow-md shadow-indigo-500/20 flex items-center justify-center bg-slate-900 shrink-0">
+            <ExtensionIcon size={32} className="w-full h-full" />
           </div>
           <div>
             <h1 className="text-base font-bold text-slate-900 leading-tight">

@@ -26,6 +26,7 @@ interface HistoryModalProps {
   onDeleteSession: (sessionId: string) => void;
   onClearAllHistory: () => void;
   onExportSession: (session: SavedSessionHistory) => void;
+  onNavigateToModel?: (modelId: AIModelId, url?: string) => void;
 }
 
 export const HistoryModal: React.FC<HistoryModalProps> = ({
@@ -36,6 +37,7 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
   onDeleteSession,
   onClearAllHistory,
   onExportSession,
+  onNavigateToModel,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
@@ -63,6 +65,14 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
 
   const toggleExpand = (id: string) => {
     setExpandedSessionId(prev => (prev === id ? null : id));
+  };
+
+  const handleModelClick = (modelId: AIModelId, url?: string) => {
+    if (onNavigateToModel) {
+      onNavigateToModel(modelId, url);
+    } else if (url) {
+      window.open(url, '_blank');
+    }
   };
 
   return (
@@ -205,17 +215,15 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
 
                               {finalUrl && (
                                 <div className="flex items-center gap-1 ml-1 pl-1 border-l border-slate-200">
-                                  <a
-                                    href={finalUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 font-medium hover:underline text-[11px]"
-                                    title={`打开 ${config?.name} 官网会话: ${finalUrl}`}
+                                  <button
+                                    onClick={() => handleModelClick(modelId as AIModelId, finalUrl)}
+                                    className="text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 font-medium hover:underline text-[11px] cursor-pointer bg-indigo-50/80 px-1.5 py-0.5 rounded border border-indigo-200/60"
+                                    title={`在内嵌界面或新标签页定位到 ${config?.name} 对话: ${finalUrl}`}
                                   >
-                                    <Globe className="w-3 h-3" />
-                                    <span>直达会话</span>
-                                    <ExternalLink className="w-2.5 h-2.5" />
-                                  </a>
+                                    <Globe className="w-3 h-3 text-indigo-600" />
+                                    <span>定位会话</span>
+                                    <ExternalLink className="w-2.5 h-2.5 text-indigo-500" />
+                                  </button>
 
                                   <button
                                     onClick={() => handleCopyUrl(finalUrl)}
@@ -304,16 +312,15 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
                                   <div className="flex items-center justify-between mb-1">
                                     <span className="font-bold text-slate-800">{cfg?.name || mId}</span>
                                     {respUrl && (
-                                      <a
-                                        href={respUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="text-[11px] text-indigo-600 hover:underline flex items-center gap-0.5"
+                                      <button
+                                        onClick={() => handleModelClick(mId as AIModelId, respUrl)}
+                                        className="text-[11px] text-indigo-600 hover:text-indigo-800 bg-indigo-50/80 px-2 py-0.5 rounded border border-indigo-200/60 flex items-center gap-1 font-medium hover:underline cursor-pointer"
+                                        title={`直接定位并打开 ${cfg?.name} 历史会话`}
                                       >
-                                        <Globe className="w-3 h-3" />
-                                        <span>官网链接</span>
-                                        <ExternalLink className="w-2.5 h-2.5" />
-                                      </a>
+                                        <Globe className="w-3 h-3 text-indigo-600" />
+                                        <span>定位原会话</span>
+                                        <ExternalLink className="w-2.5 h-2.5 text-indigo-500" />
+                                      </button>
                                     )}
                                   </div>
                                   <p className="text-slate-600 line-clamp-3 text-[11px] leading-relaxed">

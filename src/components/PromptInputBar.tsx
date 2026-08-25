@@ -20,6 +20,8 @@ interface PromptInputBarProps {
   currentRound: number;
   systemPrompt: string;
   setSystemPrompt: (prompt: string) => void;
+  externalPrompt?: string;
+  setExternalPrompt?: (prompt: string) => void;
 }
 
 export const PromptInputBar: React.FC<PromptInputBarProps> = ({
@@ -32,8 +34,12 @@ export const PromptInputBar: React.FC<PromptInputBarProps> = ({
   currentRound,
   systemPrompt,
   setSystemPrompt,
+  externalPrompt,
+  setExternalPrompt,
 }) => {
-  const [prompt, setPrompt] = useState('');
+  const [internalPrompt, setInternalPrompt] = useState('');
+  const prompt = externalPrompt !== undefined ? externalPrompt : internalPrompt;
+  const setPrompt = setExternalPrompt || setInternalPrompt;
   const [showSystemConfig, setShowSystemConfig] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 

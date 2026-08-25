@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { downloadExtensionZip, generateExtensionFiles } from '../services/extensionPackager';
-import { X, Chrome, Download, CheckCircle2, FileCode, ShieldCheck } from 'lucide-react';
+import { X, Chrome, Download, CheckCircle2, FileCode, ShieldCheck, Sparkles, RefreshCw, Zap } from 'lucide-react';
+import { ExtensionIcon } from './ExtensionIcon';
 
 interface ExtensionModalProps {
   isOpen: boolean;
@@ -32,9 +33,9 @@ export const ExtensionModal: React.FC<ExtensionModalProps> = ({ isOpen, onClose 
       <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-100 bg-white flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-200 flex items-center justify-center">
-              <Chrome className="w-4 h-4" />
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl overflow-hidden shadow-md shadow-indigo-500/20 flex items-center justify-center bg-slate-900 shrink-0">
+              <ExtensionIcon size={40} className="w-full h-full" />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -42,8 +43,11 @@ export const ExtensionModal: React.FC<ExtensionModalProps> = ({ isOpen, onClose 
                 <span className="text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200 px-1.5 py-0.5 rounded font-mono font-bold">
                   Manifest V3
                 </span>
+                <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded font-semibold">
+                  已内置高清图标 & 1/2/3分自动轮询
+                </span>
               </div>
-              <p className="text-xs text-slate-500">打包下载原生 Chrome 扩展程序，在浏览器内直接注入自动化脚本并发唤起模型</p>
+              <p className="text-xs text-slate-500">打包下载原生 Chrome 扩展程序，自动解除 ChatGPT/Gemini/DeepSeek 嵌入限制并支持阶梯式重试抓取</p>
             </div>
           </div>
 

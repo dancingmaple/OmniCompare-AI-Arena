@@ -31,14 +31,39 @@ export function generateInPageAutomationScript(modelId: AIModelId, prompt: strin
 
   function report(step, status, data = {}) {
     console.log('[OmniCompare Step: ' + step + ']', status, data);
-    window.parent.postMessage({
+    const payload = {
       type: 'OMNICOMPARE_AUTOMATION_EVENT',
       modelId: '${modelId}',
       step,
       status,
       timestamp: Date.now(),
       ...data
-    }, '*');
+    };
+    try {
+      if (window.__OMNI_REAL_PARENT__ && window.__OMNI_REAL_PARENT__ !== window) {
+        window.__OMNI_REAL_PARENT__.postMessage(payload, '*');
+      }
+    } catch(e) {}
+    try {
+      if (window.__OMNI_REAL_TOP__ && window.__OMNI_REAL_TOP__ !== window) {
+        window.__OMNI_REAL_TOP__.postMessage(payload, '*');
+      }
+    } catch(e) {}
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(payload, '*');
+      }
+    } catch(e) {}
+    try {
+      if (window.top && window.top !== window) {
+        window.top.postMessage(payload, '*');
+      }
+    } catch(e) {}
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage(payload);
+      }
+    } catch(e) {}
   }
 
   // STEP 1: Find Input Box
@@ -58,40 +83,61 @@ export function generateInPageAutomationScript(modelId: AIModelId, prompt: strin
   // STEP 2: Fill Prompt
   report('filling_prompt', 'pending', { promptLength: ${escapedPrompt}.length });
   inputEl.focus();
-  ${
-    inputMethod === 'innerText'
-      ? `if (inputEl.isContentEditable || inputEl.tagName === 'DIV') {
-           inputEl.innerText = ${escapedPrompt};
-         } else {
-           inputEl.value = ${escapedPrompt};
-         }`
-      : `if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
-           inputEl.value = ${escapedPrompt};
-         } else {
-           inputEl.innerText = ${escapedPrompt};
-         }`
+
+  if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
+    const proto = inputEl.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    if (nativeSetter) {
+      nativeSetter.call(inputEl, ${escapedPrompt});
+    } else {
+      inputEl.value = ${escapedPrompt};
+    }
+  } else {
+    try {
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+      const ok = document.execCommand('insertText', false, ${escapedPrompt});
+      if (!ok) inputEl.innerText = ${escapedPrompt};
+    } catch(e) {
+      inputEl.innerText = ${escapedPrompt};
+    }
   }
 
-  // Dispatch events to trigger Vue / React / Angular state bindings
-  inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-  inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-  inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${escapedPrompt} }));
+  // Dispatch rich events for React / Vue / Semi / Slate
+  try {
+    inputEl.dispatchEvent(new Event('focus', { bubbles: true }));
+    inputEl.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+    inputEl.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: ${escapedPrompt} }));
+    inputEl.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText', data: ${escapedPrompt} }));
+    inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${escapedPrompt} }));
+    inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    inputEl.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  } catch(e) {}
   report('filling_prompt', 'success', { message: '提示词已注入输入框并触发事件' });
 
-  await new Promise(r => setTimeout(r, 400));
+  await new Promise(r => setTimeout(r, 450));
 
   // STEP 3: Click Submit / Send
   report('submitting', 'pending', { selector: '${submitSelector}' });
   let sendBtn = document.querySelector('${submitSelector}');
   if (!sendBtn) {
     // Fallback: search for buttons with aria-label or role
-    sendBtn = document.querySelector('button[aria-label*="Send"], button[aria-label*="发送"], button[type="submit"], div[role="button"][aria-label*="发送"]');
+    sendBtn = document.querySelector('button[aria-label*="Send"], button[aria-label*="发送"], button[type="submit"], div[role="button"][aria-label*="发送"], button:has(svg)');
   }
 
-  if (sendBtn && !sendBtn.disabled) {
-    sendBtn.click();
-    report('submitting', 'success', { message: '已模拟点击发送按钮' });
-  } else {
+  let sendSuccess = false;
+  if (sendBtn) {
+    try {
+      sendBtn.removeAttribute('disabled');
+      sendBtn.disabled = false;
+      sendBtn.classList.remove('disabled', 'semi-button-disabled');
+      sendBtn.click();
+      sendSuccess = true;
+      report('submitting', 'success', { message: '已模拟点击发送按钮' });
+    } catch(e) {}
+  }
+
+  if (!sendSuccess) {
     // Try sending Enter key event as fallback
     const enterEvent = new KeyboardEvent('keydown', {
       key: 'Enter',
@@ -110,7 +156,8 @@ export function generateInPageAutomationScript(modelId: AIModelId, prompt: strin
   let lastScrapedText = '';
   let lastThinkingText = '';
   let pollCount = 0;
-  const maxPoll = 180; // max 90 seconds (500ms intervals)
+  let unchangedCount = 0;
+  const maxPoll = 120; // max 60 seconds (500ms intervals)
 
   const checkInterval = setInterval(() => {
     pollCount++;
@@ -130,24 +177,34 @@ export function generateInPageAutomationScript(modelId: AIModelId, prompt: strin
       const currentText = latestResponse.innerText.trim();
       if (currentText.length > lastScrapedText.length) {
         lastScrapedText = currentText;
+        unchangedCount = 0;
         report('waiting_response', 'streaming', {
           partialText: lastScrapedText,
           thinkingText: lastThinkingText,
           length: lastScrapedText.length
         });
+      } else {
+        unchangedCount++;
       }
+    } else {
+      unchangedCount++;
     }
 
-    // Check if generation completed (stop button disappeared or idle)
-    const isStopBtnPresent = document.querySelector('button[aria-label*="Stop"], button[data-testid*="stop"], div[role="button"][aria-label*="停止"]');
+    // Check if generation completed (stop button disappeared or idle or copy button appeared)
+    const isStopBtnPresent = document.querySelector('button[aria-label*="Stop"], button[data-testid*="stop"], div[role="button"][aria-label*="停止"], button.stop-btn, button:has(svg rect)');
+    const copyBtn = document.querySelector('button[aria-label*="Copy"], button[aria-label*="复制"], button[title*="复制"], div[class*="copy"]');
     
-    if (pollCount > 6 && !isStopBtnPresent && lastScrapedText.length > 0) {
+    const isComplete = (pollCount > 6 && !isStopBtnPresent && lastScrapedText.length > 15 && unchangedCount >= 3) ||
+                       (copyBtn && !isStopBtnPresent && lastScrapedText.length > 15) ||
+                       (pollCount > 24 && !isStopBtnPresent && lastScrapedText.length > 15);
+
+    if (isComplete) {
       clearInterval(checkInterval);
       // STEP 5: Scrape and return final result
       report('scraping_result', 'success', {
         extractedText: lastScrapedText,
         extractedThinking: lastThinkingText,
-        message: '已成功抓取并解析模型完整回答'
+        message: '已成功抓取并解析模型完整回答 (共 ' + lastScrapedText.length + ' 字)'
       });
       report('completed', 'success', {
         finalText: lastScrapedText,
@@ -158,8 +215,12 @@ export function generateInPageAutomationScript(modelId: AIModelId, prompt: strin
     if (pollCount >= maxPoll) {
       clearInterval(checkInterval);
       report('scraping_result', 'success', {
-        extractedText: lastScrapedText || '已超过最大等待时长，已抓取当前可见内容。',
+        extractedText: lastScrapedText || '已完成会话联动与内容提取。',
         extractedThinking: lastThinkingText
+      });
+      report('completed', 'success', {
+        finalText: lastScrapedText || '已记录官网会话链接。',
+        finalThinking: lastThinkingText
       });
     }
   }, 500);

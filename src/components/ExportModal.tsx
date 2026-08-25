@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AIModelId, ModelSession, ExportSessionData, SavedSessionHistory } from '../types/arena';
+import { AIModelId, ModelSession, ExportSessionData, SavedSessionHistory, ModelAutomationState } from '../types/arena';
 import { SUPPORTED_MODELS } from '../config/models';
 import {
   X,
@@ -19,6 +19,7 @@ interface ExportModalProps {
   isOpen: boolean;
   onClose: () => void;
   sessions: Record<AIModelId, ModelSession>;
+  automationStates?: Record<AIModelId, ModelAutomationState>;
   selectedModelIds: AIModelId[];
   activeRound: number;
   onImportSession?: (data: ExportSessionData) => void;
@@ -29,6 +30,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   isOpen,
   onClose,
   sessions,
+  automationStates,
   selectedModelIds,
   activeRound,
   onImportSession,
@@ -44,11 +46,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
   // Helper to get response and conversation URL for a model at a round
   const getRoundData = (rIndex: number, modelId: AIModelId) => {
+    const config = SUPPORTED_MODELS.find(m => m.id === modelId);
     if (sessionToExport) {
       const round = sessionToExport.rounds[rIndex - 1];
       const userPrompt = round?.userPrompt || `第 ${rIndex} 轮提示词`;
       const resp = round?.responses[modelId];
-      const config = SUPPORTED_MODELS.find(m => m.id === modelId);
       return {
         userPrompt,
         content: resp?.content || '',
@@ -63,15 +65,27 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       const userPrompt = firstSession?.messages.filter(m => m.role === 'user')[rIndex - 1]?.content || `Round ${rIndex} Prompt`;
       const session = sessions[modelId];
       const assistantMsg = session?.messages.filter(m => m.role === 'assistant')[rIndex - 1];
-      const config = SUPPORTED_MODELS.find(m => m.id === modelId);
+      const autoState = automationStates?.[modelId];
+
+      // Double guarantee: take whichever is longer and more complete
+      const sessionText = assistantMsg?.content || '';
+      const autoText = autoState?.lastScrapedContent || '';
+      const finalContent = (autoText.length > sessionText.length ? autoText : sessionText) || sessionText;
+
+      const sessionThinking = assistantMsg?.thinkingContent;
+      const autoThinking = autoState?.lastScrapedThinking;
+      const finalThinking = autoThinking || sessionThinking;
+
+      const convUrl = assistantMsg?.conversationUrl || session?.conversationUrl || autoState?.conversationUrl || config?.webUrl;
+
       return {
         userPrompt,
-        content: assistantMsg?.content || '',
-        thinking: assistantMsg?.thinkingContent,
+        content: finalContent,
+        thinking: finalThinking,
         latencyMs: assistantMsg?.latencyMs || session?.lastLatencyMs || config?.sampleLatencyMs,
         tokensPerSec: assistantMsg?.tokensPerSec || session?.lastTokensPerSec || config?.sampleTokensPerSec,
         score: assistantMsg?.score,
-        conversationUrl: assistantMsg?.conversationUrl || session?.conversationUrl || config?.webUrl,
+        conversationUrl: convUrl,
       };
     }
   };

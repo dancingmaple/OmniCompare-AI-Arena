@@ -32,6 +32,21 @@ import { SettingsModal } from './components/SettingsModal';
 import { executeModelQuery } from './services/apiService';
 import { getNowTimeString } from './services/iframeAutomationEngine';
 
+// Model ID normalizer for diverse event sources
+function normalizeModelId(id: string): AIModelId | null {
+  if (!id) return null;
+  const lower = id.toLowerCase().trim();
+  if (lower === 'zai' || lower.includes('glm') || lower.includes('zhipu') || lower.includes('chatglm')) return 'zai';
+  if (lower === 'kimi' || lower.includes('moonshot')) return 'kimi';
+  if (lower === 'doubao' || lower.includes('bytedance')) return 'doubao';
+  if (lower === 'qwen' || lower.includes('tongyi')) return 'qwen';
+  if (lower === 'deepseek') return 'deepseek';
+  if (lower === 'chatgpt' || lower.includes('openai') || lower === 'gpt') return 'chatgpt';
+  if (lower === 'gemini' || lower.includes('google')) return 'gemini';
+  if (lower === 'claude' || lower.includes('anthropic')) return 'claude';
+  return null;
+}
+
 export default function App() {
   // Active models (default 7 models requested by user)
   const [selectedModelIds, setSelectedModelIds] = useState<AIModelId[]>([
@@ -115,6 +130,7 @@ export default function App() {
   const [sessionToExportForModal, setSessionToExportForModal] = useState<SavedSessionHistory | null>(null);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isPresetsModalOpen, setIsPresetsModalOpen] = useState(false);
+  const [draftPrompt, setDraftPrompt] = useState('');
 
   // Persistent session history list
   const [historyList, setHistoryList] = useState<SavedSessionHistory[]>(() => {
@@ -154,15 +170,16 @@ export default function App() {
   useEffect(() => {
     const handleWindowMessage = (event: MessageEvent) => {
       if (!event.data || event.data.type !== 'OMNICOMPARE_AUTOMATION_EVENT') return;
-      const { modelId, step, status, message, partialText, extractedText, extractedThinking, conversationUrl } = event.data;
+      const { modelId: rawModelId, step, status, message, partialText, extractedText, extractedThinking, conversationUrl } = event.data;
 
+      const modelId = normalizeModelId(rawModelId) || (rawModelId as AIModelId);
       if (!modelId) return;
 
       const contentToSet = extractedText || partialText;
 
       // Update session's captured URL, extracted assistant messages, thinking, and latency
       setSessions(prev => {
-        const cur = prev[modelId as AIModelId];
+        const cur = prev[modelId];
         if (!cur) return prev;
         const msgs = [...cur.messages];
         if (msgs.length > 0) {
@@ -175,11 +192,40 @@ export default function App() {
               conversationUrl: conversationUrl || msgs[lastIdx].conversationUrl || cur.conversationUrl,
               status: (step === 'completed' || step === 'scraping_result') ? 'completed' : 'streaming',
             };
+          } else {
+            // Last message was user, push new assistant message
+            if (contentToSet) {
+              msgs.push({
+                id: 'msg-' + Date.now(),
+                role: 'assistant',
+                modelId: modelId,
+                content: contentToSet,
+                thinkingContent: extractedThinking,
+                timestamp: Date.now(),
+                status: (step === 'completed' || step === 'scraping_result') ? 'completed' : 'streaming',
+                round: activeRound || 1,
+                conversationUrl: conversationUrl || cur.conversationUrl,
+              });
+            }
           }
+        } else if (contentToSet) {
+          // No messages, create assistant message directly
+          msgs.push({
+            id: 'msg-' + Date.now(),
+            role: 'assistant',
+            modelId: modelId,
+            content: contentToSet,
+            thinkingContent: extractedThinking,
+            timestamp: Date.now(),
+            status: (step === 'completed' || step === 'scraping_result') ? 'completed' : 'streaming',
+            round: activeRound || 1,
+            conversationUrl: conversationUrl || cur.conversationUrl,
+          });
         }
+
         return {
           ...prev,
-          [modelId as AIModelId]: {
+          [modelId]: {
             ...cur,
             conversationUrl: conversationUrl || cur.conversationUrl,
             messages: msgs,
@@ -189,8 +235,16 @@ export default function App() {
         };
       });
 
+      // If finished, cancel any retry timer
+      if ((step === 'completed' || step === 'scraping_result') && contentToSet && contentToSet.length > 10) {
+        if (retryIntervalsRef.current[modelId]) {
+          clearInterval(retryIntervalsRef.current[modelId]);
+          delete retryIntervalsRef.current[modelId];
+        }
+      }
+
       setAutomationStates(prev => {
-        const current = prev[modelId as AIModelId];
+        const current = prev[modelId];
         if (!current) return prev;
 
         const newLogs = [...current.logs];
@@ -202,14 +256,20 @@ export default function App() {
           });
         }
 
+        const isDone = step === 'completed' || step === 'scraping_result';
+
         return {
           ...prev,
           [modelId]: {
             ...current,
             currentStep: step as AutomationStep,
+            progressPercent: isDone ? 100 : (step === 'waiting_response' ? 80 : current.progressPercent),
             statusMessage: message || current.statusMessage,
             lastScrapedContent: extractedText || partialText || current.lastScrapedContent,
             lastScrapedThinking: extractedThinking || current.lastScrapedThinking,
+            conversationUrl: conversationUrl || current.conversationUrl,
+            isRetrying: isDone ? false : current.isRetrying,
+            nextRetrySeconds: isDone ? undefined : current.nextRetrySeconds,
             logs: newLogs,
           },
         };
@@ -217,7 +277,28 @@ export default function App() {
     };
 
     window.addEventListener('message', handleWindowMessage);
-    return () => window.removeEventListener('message', handleWindowMessage);
+
+    // If running in browser with extension installed, also listen to chrome.runtime.onMessage directly
+    let chromeListener: any = null;
+    if (typeof window !== 'undefined' && (window as any).chrome?.runtime?.onMessage) {
+      chromeListener = (msg: any) => {
+        if (msg && msg.type === 'OMNICOMPARE_AUTOMATION_EVENT') {
+          handleWindowMessage({ data: msg } as MessageEvent);
+        }
+      };
+      try {
+        (window as any).chrome.runtime.onMessage.addListener(chromeListener);
+      } catch (e) {}
+    }
+
+    return () => {
+      window.removeEventListener('message', handleWindowMessage);
+      if (chromeListener && (window as any).chrome?.runtime?.onMessage) {
+        try {
+          (window as any).chrome.runtime.onMessage.removeListener(chromeListener);
+        } catch (e) {}
+      }
+    };
   }, []);
 
   const toggleFullscreen = () => {
@@ -248,7 +329,7 @@ export default function App() {
   };
 
   // Reload iframe
-  const handleReloadIframe = (modelId: AIModelId) => {
+  const handleReloadIframe = (modelId: AIModelId, targetUrl?: string) => {
     setAutomationStates(prev => {
       const cur = prev[modelId];
       if (!cur) return prev;
@@ -259,14 +340,192 @@ export default function App() {
           iframeKey: cur.iframeKey + 1,
           currentStep: 'idle',
           progressPercent: 0,
-          statusMessage: 'IFrame 已重新加载',
+          statusMessage: targetUrl ? '已定位并重新载入指定历史会话' : 'IFrame 已重新加载',
           logs: [
             ...cur.logs,
-            { time: getNowTimeString(), text: '用户手动刷新 IFrame 页面', type: 'info' },
+            { time: getNowTimeString(), text: targetUrl ? `已定位至指定会话: ${targetUrl}` : '用户手动刷新 IFrame 页面', type: 'info' },
           ],
         },
       };
     });
+
+    if (targetUrl) {
+      const iframe = document.getElementById(`iframe-${modelId}`) as HTMLIFrameElement | null;
+      if (iframe) {
+        iframe.src = targetUrl;
+      }
+    }
+  };
+
+  // Auto-Retry Ladder Manager (1 min, 2 min, 3 min)
+  const retryIntervalsRef = useRef<Record<string, any>>({});
+  const automationStatesRef = useRef(automationStates);
+  automationStatesRef.current = automationStates;
+
+  const startAutoRetryLadder = (modelId: AIModelId, promptText: string) => {
+    // Clear any existing timer for this model
+    if (retryIntervalsRef.current[modelId]) {
+      clearInterval(retryIntervalsRef.current[modelId]);
+    }
+
+    let retryStep = 1; // 1 = 1st retry (60s), 2 = 2nd retry (60s), 3 = 3rd retry (60s)
+    let remainingSeconds = 60;
+
+    setAutomationStates(prev => ({
+      ...prev,
+      [modelId]: {
+        ...prev[modelId],
+        isRetrying: true,
+        retryCount: retryStep,
+        nextRetrySeconds: remainingSeconds,
+        statusMessage: `⏳ 未获取到内容，将在 ${remainingSeconds}s 后第 ${retryStep} 次自动重新获取 (1/3)`
+      }
+    }));
+
+    const timerId = setInterval(() => {
+      remainingSeconds--;
+
+      if (remainingSeconds > 0) {
+        setAutomationStates(prev => {
+          const cur = prev[modelId];
+          if (!cur || !cur.isRetrying) return prev;
+          return {
+            ...prev,
+            [modelId]: {
+              ...cur,
+              nextRetrySeconds: remainingSeconds,
+              statusMessage: `⏳ 未获取到内容，将在 ${remainingSeconds}s 后第 ${retryStep} 次自动重新获取 (${retryStep}/3)`
+            }
+          };
+        });
+      } else {
+        // Trigger Scrape!
+        const iframe = document.getElementById(`iframe-${modelId}`) as HTMLIFrameElement | null;
+        if (iframe?.contentWindow) {
+          try {
+            iframe.contentWindow.postMessage({
+              type: 'OMNICOMPARE_SCRAPE_NOW',
+              modelId,
+              prompt: promptText || lastUserPrompt
+            }, '*');
+          } catch (e) {}
+        }
+
+        // Check if content was obtained
+        const currentContent = automationStatesRef.current[modelId]?.lastScrapedContent || '';
+        if (currentContent.length > 20) {
+          // Success!
+          clearInterval(timerId);
+          delete retryIntervalsRef.current[modelId];
+          setAutomationStates(prev => ({
+            ...prev,
+            [modelId]: {
+              ...prev[modelId],
+              isRetrying: false,
+              retryCount: 0,
+              nextRetrySeconds: undefined,
+              statusMessage: `✅ 第 ${retryStep} 次自动重试获取成功 (${currentContent.length} 字)`
+            }
+          }));
+          return;
+        }
+
+        // Advance to next ladder step if < 3
+        if (retryStep < 3) {
+          retryStep++;
+          remainingSeconds = 60;
+          setAutomationStates(prev => ({
+            ...prev,
+            [modelId]: {
+              ...prev[modelId],
+              retryCount: retryStep,
+              nextRetrySeconds: remainingSeconds,
+              statusMessage: `第 ${retryStep - 1} 次未获取到内容，将在 ${remainingSeconds}s 后第 ${retryStep} 次重试 (${retryStep}/3)`
+            }
+          }));
+        } else {
+          // Finished all 3 attempts
+          clearInterval(timerId);
+          delete retryIntervalsRef.current[modelId];
+          setAutomationStates(prev => ({
+            ...prev,
+            [modelId]: {
+              ...prev[modelId],
+              isRetrying: false,
+              retryCount: 3,
+              nextRetrySeconds: undefined,
+              statusMessage: '⚠️ 3轮阶梯自动获取已完成，未检测到文本，可点击【📝 补充/粘贴】或【重新抓取】'
+            }
+          }));
+        }
+      }
+    }, 1000);
+
+    retryIntervalsRef.current[modelId] = timerId;
+  };
+
+  const cancelAutoRetry = (modelId: AIModelId) => {
+    if (retryIntervalsRef.current[modelId]) {
+      clearInterval(retryIntervalsRef.current[modelId]);
+      delete retryIntervalsRef.current[modelId];
+    }
+    setAutomationStates(prev => ({
+      ...prev,
+      [modelId]: {
+        ...prev[modelId],
+        isRetrying: false,
+        nextRetrySeconds: undefined,
+        statusMessage: '已取消自动重试'
+      }
+    }));
+  };
+
+  const handleFixChatGPTBlank = (modelId: AIModelId = 'chatgpt') => {
+    const cur = automationStates[modelId];
+    const newKey = (cur?.iframeKey || 0) + 1;
+    const targetUrl = `https://chatgpt.com/?model=auto&_t=${Date.now()}`;
+
+    setAutomationStates(prev => ({
+      ...prev,
+      [modelId]: {
+        ...prev[modelId],
+        iframeKey: newKey,
+        currentStep: 'idle',
+        progressPercent: 0,
+        statusMessage: '🚀 正在解除防嵌入检测并强制重新载入 ChatGPT...',
+        logs: [
+          ...(prev[modelId]?.logs || []),
+          { time: getNowTimeString(), text: '用户触发 ChatGPT 专属白屏自愈与强制重载', type: 'info' }
+        ]
+      }
+    }));
+
+    const iframe = document.getElementById(`iframe-${modelId}`) as HTMLIFrameElement | null;
+    if (iframe) {
+      iframe.src = targetUrl;
+    }
+  };
+
+  // Trigger batch retry scrape on all or single model
+  const handleTriggerRetryScrape = (targetModelId?: AIModelId) => {
+    const targets = targetModelId ? [targetModelId] : selectedModelIds;
+    targets.forEach(mId => {
+      // Execute scrape step
+      handleExecuteStep(mId, 'scraping_result', lastUserPrompt);
+      // Start ladder retry
+      startAutoRetryLadder(mId, lastUserPrompt);
+    });
+
+    // Also broadcast to extension if available
+    if (typeof window !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
+      try {
+        (window as any).chrome.runtime.sendMessage({
+          type: 'DISPATCH_SCRAPE_ALL',
+          prompt: lastUserPrompt,
+          targetModels: targets
+        });
+      } catch (e) {}
+    }
   };
 
   // Single step execution
@@ -280,12 +539,33 @@ export default function App() {
     const iframe = document.getElementById(`iframe-${modelId}`) as HTMLIFrameElement | null;
     if (iframe?.contentWindow) {
       try {
-        iframe.contentWindow.postMessage({
-          type: 'OMNICOMPARE_EXECUTE_AUTOMATION',
-          modelId,
-          step,
-          prompt: p
-        }, '*');
+        if (step === 'scraping_result') {
+          iframe.contentWindow.postMessage({
+            type: 'OMNICOMPARE_SCRAPE_NOW',
+            modelId,
+            prompt: p
+          }, '*');
+        } else {
+          iframe.contentWindow.postMessage({
+            type: 'OMNICOMPARE_EXECUTE_AUTOMATION',
+            modelId,
+            step,
+            prompt: p
+          }, '*');
+        }
+      } catch (e) {}
+    }
+
+    // Also notify extension runtime if installed
+    if (typeof window !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
+      try {
+        if (step === 'scraping_result') {
+          (window as any).chrome.runtime.sendMessage({
+            type: 'OMNICOMPARE_SCRAPE_NOW',
+            modelId,
+            prompt: p
+          });
+        }
       } catch (e) {}
     }
 
@@ -310,9 +590,9 @@ export default function App() {
         percent = 60;
         logType = 'success';
       } else if (step === 'scraping_result') {
-        msg = `已抓取解析回答内容`;
-        percent = 100;
-        logType = 'success';
+        msg = `正在抓取解析回答内容...`;
+        percent = 90;
+        logType = 'info';
       }
 
       return {
@@ -797,12 +1077,21 @@ export default function App() {
         const s = latestSessions[mId];
         const lastMsg = s?.messages[s.messages.length - 1];
         const config = SUPPORTED_MODELS.find(m => m.id === mId);
+        const autoState = automationStatesRef.current[mId];
+
+        const sessionText = lastMsg?.content || '';
+        const autoText = autoState?.lastScrapedContent || '';
+        const content = (autoText.length > sessionText.length ? autoText : sessionText) || sessionText;
+
+        const thinking = autoState?.lastScrapedThinking || lastMsg?.thinkingContent;
+        const convUrl = lastMsg?.conversationUrl || s?.conversationUrl || autoState?.conversationUrl || config?.webUrl;
+
         roundResponses[mId] = {
-          content: lastMsg?.content || '',
-          thinking: lastMsg?.thinkingContent,
+          content,
+          thinking,
           latencyMs: lastMsg?.latencyMs || s?.lastLatencyMs,
           tokensPerSec: lastMsg?.tokensPerSec || s?.lastTokensPerSec,
-          conversationUrl: lastMsg?.conversationUrl || s?.conversationUrl || config?.webUrl,
+          conversationUrl: convUrl,
         };
       });
 
@@ -918,6 +1207,10 @@ export default function App() {
     setSelectedModelIds(histSession.models);
     setSessions(restored as Record<AIModelId, ModelSession>);
     setActiveRound(histSession.rounds.length);
+    const lastPrompt = histSession.rounds[histSession.rounds.length - 1]?.userPrompt || '';
+    if (lastPrompt) {
+      setLastUserPrompt(lastPrompt);
+    }
     setIsHistoryModalOpen(false);
   };
 
@@ -1176,6 +1469,9 @@ export default function App() {
           onReloadIframe={handleReloadIframe}
           onOpenExtensionModal={() => setIsExtensionModalOpen(true)}
           onSyncScrapedToSession={handleSyncScrapedToSession}
+          onTriggerRetryScrape={handleTriggerRetryScrape}
+          onCancelRetry={cancelAutoRetry}
+          onFixChatGPTBlank={handleFixChatGPTBlank}
         />
       )}
 
@@ -1233,6 +1529,9 @@ export default function App() {
               onReloadIframe={handleReloadIframe}
               onOpenExtensionModal={() => setIsExtensionModalOpen(true)}
               onSyncScrapedToSession={handleSyncScrapedToSession}
+              onTriggerRetryScrape={handleTriggerRetryScrape}
+              onCancelRetry={cancelAutoRetry}
+              onFixChatGPTBlank={handleFixChatGPTBlank}
             />
           </div>
         </div>
@@ -1249,14 +1548,21 @@ export default function App() {
         currentRound={activeRound}
         systemPrompt={settings.systemPrompt}
         setSystemPrompt={p => setSettings(prev => ({ ...prev, systemPrompt: p }))}
+        externalPrompt={draftPrompt}
+        setExternalPrompt={setDraftPrompt}
       />
 
       {/* Modals */}
       <PromptPresetModal
         isOpen={isPresetsModalOpen}
         onClose={() => setIsPresetsModalOpen(false)}
+        onFillPrompt={(prompt, sysPrompt) => {
+          if (sysPrompt) setSettings(prev => ({ ...prev, systemPrompt: sysPrompt }));
+          setDraftPrompt(prompt);
+        }}
         onSelectPrompt={(prompt, sysPrompt) => {
           if (sysPrompt) setSettings(prev => ({ ...prev, systemPrompt: sysPrompt }));
+          setDraftPrompt('');
           handleSendConcurrentPrompt(prompt);
         }}
       />
@@ -1284,6 +1590,7 @@ export default function App() {
           setSessionToExportForModal(null);
         }}
         sessions={sessions}
+        automationStates={automationStates}
         selectedModelIds={selectedModelIds}
         activeRound={activeRound}
         onImportSession={handleImportSession}
@@ -1298,6 +1605,20 @@ export default function App() {
         onDeleteSession={handleDeleteHistorySession}
         onClearAllHistory={handleClearAllHistory}
         onExportSession={handleExportHistoricalSession}
+        onNavigateToModel={(modelId, url) => {
+          setIsHistoryModalOpen(false);
+          if (!selectedModelIds.includes(modelId)) {
+            setSelectedModelIds(prev => [...prev, modelId]);
+          }
+          if (viewMode === 'arena') {
+            setViewMode('split');
+          }
+          const config = SUPPORTED_MODELS.find(m => m.id === modelId);
+          const targetUrl = url || config?.webUrl;
+          if (targetUrl) {
+            handleReloadIframe(modelId, targetUrl);
+          }
+        }}
       />
 
       <ExtensionModal
